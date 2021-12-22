@@ -1,0 +1,465 @@
+---
+title: "Data Analysis 2 & Coding 1 - Term Project"
+subtitle: "Analyzing the relationship between rainfall and the number of goals scored in a football match"
+author: "Haaris Afzal Cheema"
+date: "12/22/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(modelsummary)
+library(fixest)
+library(lubridate)
+library(raster)
+library(tidyverse)
+library(fixest)
+library(lspline)
+library(corrplot)
+library(car)
+library(estimatr)
+library(gridExtra)
+library(kableExtra)
+
+rm(list= ls())
+
+```
+
+## Introduction 
+
+This analysis will explore the relationship between rainfall and the number of goals scored in a football match. The analysis will be restricted to the English Premier League for the season 2018-2019. 
+In England, rainfall is often observed during football matches. Due to this, playing conditions tend to get more difficult as the ball tends to skid more and it is expected that players, especially goalkeepers, will be prone to making more errors, leading to a greater number of goals in the match. Therefore, the primary purpose of this analysis will be to investigate whether a relationship exists between rainfall and the number of goals scored in a match.
+
+## Data Collection  # mention general pattern or pop in external validity part
+
+```{r, echo=FALSE}
+
+## Loading and combining the weather data
+
+# loading the first city's weather data
+
+weather <- read_csv(url('https://raw.githubusercontent.com/CheemaHaaris/DA2/main/TermProject/data/raw/weather/bournemouth1.csv'))
+
+# saving the list of cities to a vector
+
+teams <- c('bournemouth2','wolverhampton1','wolverhampton2','watford1','watford2',
+           'southampton','selhurst1','selhurst2','newcastle','manchester','london','liverpool','leicester1',
+           'leicester2', 'huddersfield','cardiff','burnley2','burnley1', 'brighton2', 'brighton1')
+
+# defining the common start to all csv's names
+
+urlstart <- 'https://raw.githubusercontent.com/CheemaHaaris/DA2/main/TermProject/data/raw/weather/'
+
+# defining the common end to all csv's names
+
+urlend <- '.csv'
+
+# defining the urls for city data
+
+url2 <- paste0(urlstart,teams,urlend)
+
+# looping through the city csv's and row binding it to the weather df
+
+for (i in 1:length(url2)) {
+  weather <- rbind(read_csv(url2[i]), weather)
+}
+
+# selecting the appropriate columns from the weather df
+
+weather <- weather[,c(1,2,11)]
+
+# renaming the date and name variables
+
+weather <- weather %>% rename( date = datetime,
+                               City = name)
+
+# changing city names to lower case to facilitate the join
+
+weather$City <- tolower(weather$City)
+
+# changing date format to character to facilitate the join
+
+weather$date <- as.character(weather$date)
+
+###################################################################################################################
+
+## Loading, formatting and merging the cities and football data
+
+# Loading the cities data
+
+cities <- read_csv(url('https://raw.githubusercontent.com/CheemaHaaris/DA2/main/TermProject/data/raw/cities/cities.csv'))
+
+# Loading the football data (df)
+
+df <- read_csv(url('https://raw.githubusercontent.com/CheemaHaaris/DA2/main/TermProject/data/raw/football/epl2019.csv'))
+
+# Renaming the home team name variable to facilitate the join
+
+df <- df %>% rename( Team = home_team_name)
+
+# Joining the cities dataframe with the main df on the basis of the common 'Team' variable
+
+df <- inner_join(df, cities, by = 'Team') 
+
+# Changing city contents to lower case to facilitate the join
+
+df$City <- tolower(df$City)
+
+# Creating new variables: total corners, total yellow cards, total red cards, total shots, total shots on target
+
+df <- df %>% mutate(cnr = away_team_corner_count + home_team_corner_count,
+                    yc = away_team_yellow_cards + home_team_yellow_cards,
+                    rc = away_team_red_cards + home_team_red_cards,
+                    shots = away_team_shots + home_team_shots,
+                    shots_t = away_team_shots_on_target + home_team_shots_on_target )
+
+# Renaming the dependent variable
+
+df <- df %>% rename( tgc = total_goal_count)  
+
+# Selecting relevant columns into a new dataframe
+
+football <- df[c(2,15,65:70)]
+
+# Changing the date format to bring it to the same format as in the weather data
+
+football$date <- paste0(substr(football$date_GMT,1,6),',',substr(football$date_GMT,7,12))
+
+football$date <- format(as.Date(football$date, format = "%b %d, %Y"), "%Y/%m/%d")
+
+football$date <- paste0(substr(football$date,1,4), '-',substr(football$date,6,7), '-',substr(football$date,9,10))
+
+# Changing one city's name to bring it to the same format as in the weather data
+
+football$City <- sub("burnley, lancashire", "burnley", football$City)
+
+# Converting red cards to binary 
+
+football$rc <- ifelse(football$rc < 1, 0, 1)
+
+###################################################################################################################
+
+# Merging the weather data with the football data
+
+final_df <- inner_join(football, weather, by=c("date","City"))
+
+# Converting rain as a binary variable for precipitation 
+
+final_df$rain <- ifelse(final_df$precip > 0 , 1,0)
+
+# Viewing the data at a very holistic level
+
+#summary(final_df)
+
+#glimpse(final_df)
+
+#table(is.na(final_df))
+
+```
+
+
+Data was collected from three different sources for this analysis. Firstly, the data on the premier league (football) was obtained from https://footystats.org/england/premier-league in a csv format. Next, data was collected manually to identify the city for each team (20 obs, 2 variables) and this was joined with the football data. Finally, weather data was collected from https://visualcrossing.com using their query builder, for each of the city in the UK which was associated with each team. 
+
+The cleaned dataset for weather contained 3864 observations for three variables, city, date and and precipitation (in mm). The cleaned data for football contained 380 observations for nine variables, the important ones from which include the total goal count, total corners in the match, number of yellow cards, number of red cards, total shots, and total shots on target. These two datasets were joined using an inner join, and the result was 380 observations.The joined data was checked for missing values, and subsequently, none were found.
+
+Before we delve into the analysis, it is important to mention some problems, challenges and data quality issues. The primary source of restriction for preparing a more accurate analysis was the lack of a free API on historical data. The data that is currently being used for weather, retrieves historical data based on the nearest weather station to our selected location. A possible issue could be that while the weather station would be experiencing rainfall on a certain day, it is possible that it did not rain on that day at the stadium. Secondly, the data measures the millimeters of rainfall in a day. However, what we would be more interested in, would be whether it would rain during the match, so at a particular time interval.So this analysis is being carried out with the assumption that the rainfall at the weather station reflects the rainfall experienced by players at the stadium and weather data for the day reflects the conditions during match time. Lastly, as mentioned before, there were was no data on premier league teams and their corresponding cities for the season of 2018-2019, so the data had to be manually collected, and so this was a different kind of difficulty which was faced in the data gathering process.
+
+## Data Descriptives 
+
+```{r, include=FALSE}
+# Defining the 95th percentile function
+P95 <- function(x){ quantile(x,.95,na.rm=T)}
+
+###################################################################################################################
+
+## Adding custom theme
+
+source('https://raw.githubusercontent.com/CheemaHaaris/DA2/main/TermProject/code/theme_function.R')
+theme_set(theme_custom())
+
+###################################################################################################################
+
+## Variable Distributions
+
+# Distribution for total goals 
+
+h1 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = tgc ) , fill = 'blue', col = 'black', binwidth = 1, alpha = 0.5)  +
+          labs( x = "Total goal count", y = "Relative Frequency")
+
+# Distribution for daily precipitation (in mm) - try logs? - fix start
+
+h2 <- ggplot(data = final_df) + 
+       geom_histogram(aes(x = rain) , fill = 'blue', col = 'black', binwidth = 0.5, alpha = 0.5) +
+        labs( x = "Rain", y = "Relative Frequency")
+
+# Distribution for number of corners
+
+h3 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = cnr ) , fill = 'blue', col = 'black', binwidth = 2, alpha = 0.5) +
+         labs( x = "Number of Corners", y = "Relative Frequency")
+
+
+# Distribution for number of yellow cards
+
+h4 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = yc ) , fill = 'blue', col = 'black', binwidth = 1, alpha = 0.5) +
+          labs( x = "Number of Yellow Cards", y = "Relative Frequency")
+
+
+# Distribution for number of red cards
+
+h5 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = rc ) , fill = 'blue', col = 'black', binwidth = 0.5, alpha = 0.5) +
+          labs( x = "Number of Red Cards", y = "Relative Frequency")
+
+
+# Distribution for number of shots in a match 
+
+h6 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = shots ) , fill = 'blue',col = 'black', binwidth = 3 , alpha = 0.5) +
+          labs( x = "Total Number of Shots", y = "Relative Frequency")
+
+
+# Distribution for number of shots on target in a match
+
+h7 <- ggplot(data = final_df) + 
+        geom_histogram( aes( x = shots_t) , fill = 'blue',col = 'black', binwidth =  3 , alpha = 0.5) +
+          labs( x = "Total Number of Shots on Target", y = "Relative Frequency")
+
+```
+
+
+In the data discovery phase, the key variables (the dependent variable, the causal variable, and the conditioning variables) were analyzed. Fig 1 (Appendix) can be used along with Fig 2 (appendix) can be used to discover the variable distributions. The dependent variable, total goals scored (tgc) has a fairly symmetrical distribution. The rain variable distribution indicates that rain was observed on 74% of the observations. The distribution for number of corners (cnr) in a match has a symmetrical distribution. The number of yellow cards (yc) in a match, however, has a slightly skewed distribution with a right tail. Moreover, the mean for red card (rc) is 0.12, indicating that in 12% of the matches, one or more red cards was given. Lastly, the number of shots and the number of shots on target (shots & shots_t) in a match also have symmetrical distributions. At an overall level we can see that mostly the variable distributions are fairly symmetrical and there are barely any extreme values. Therefore, we will not exclude any value from the data and proceed to check for patterns of association.
+
+## Checking Patterns of Association
+
+```{r, include=FALSE}
+###################################################################################################################
+
+## Checking association between tgc and all independent vars through lowess curves
+
+a1 <- ggplot(data = final_df, aes(x= rain, y= tgc)) +
+  geom_smooth(method="loess", formula = y ~ x)  +
+    geom_point(col="red") +
+      annotate("text", x = 0.5, y = 4, label = "No obvious association observed", size=4)+
+        scale_x_continuous(expand = c(0.01,0.01), limits = c(0,1), breaks = seq(0,1,0.5))+
+          scale_y_continuous(expand = c(0.01,0.01), limits = c(0,8), breaks = seq(0,8,2)) +
+            labs(x = "Rain",y = "Total Number of Goals")
+
+
+
+a2 <- ggplot(data = final_df, aes(x= cnr, y= tgc)) +
+  geom_smooth(method="loess", formula = y ~ x) +
+    geom_point(col="red") +
+      annotate("text", x = 10, y = 4.5, label = "Linear negative association observed", size=4) +
+        scale_x_continuous(expand = c(0.01,0.01), limits = c(2,22), breaks = seq(2,22,4)) +
+          scale_y_continuous(expand = c(0.01,0.01), limits = c(0,8), breaks = seq(0,8,2)) +
+            labs(x = "Number of Corners",y = "Total Number of Goals")
+
+
+a3 <- ggplot(data = final_df, aes(x= yc, y= tgc)) +
+  geom_smooth(method="loess", formula = y ~ x) +
+    geom_point(col= "red") +
+      annotate("text", x = 4.5, y = 4.5, label = "Changes in slope direction, need to add knots at yc = 4 and 6 for lsp", size=4)+
+        scale_x_continuous(expand = c(0.01,0.01), limits = c(0,9), breaks = seq(0,9,3))+
+          scale_y_continuous(expand = c(0.01,0.01), limits = c(0,8), breaks = seq(0,8,2)) +
+            labs(x = "Number of Yellow Cards",y = "Total Number of Goals") 
+  
+  
+a4 <- ggplot(data = final_df, aes(x= shots, y= tgc)) +
+  geom_smooth(method="loess", formula = y ~ x) +
+  geom_point( col = "red") +
+  annotate("text", x = 16, y = 3.5, label = "More or less linear positive association", size=4) +
+  scale_x_continuous(expand = c(0.01,0.01), limits = c(7,34), breaks = seq(7,34,3))+
+  scale_y_continuous(expand = c(0.01,0.01), limits = c(0,8), breaks = seq(0,8,2)) +
+  labs(x = "Total Number of Shots",y = "Total Number of Goals ")  
+  
+
+a5 <- ggplot(data = final_df, aes(x = shots_t, y = tgc)) +
+  geom_smooth(method="loess", formula = y ~ x) +
+    geom_point(col = "red") +
+      annotate("text", x = 14, y = 5.7, label = "Change in slope direction, need to add knot here for lsp", size=4) +
+        scale_x_continuous(expand = c(0.01,0.01), limits = c(2,22), breaks = seq(2,22,4))+
+         scale_y_continuous(expand = c(0.01,0.01), limits = c(0,8), breaks = seq(0,8,2)) +
+            labs(x = "Shots on target",y = "Total Number of Goals") 
+
+# Creating squared term for shots_t based on pattern of association
+
+final_df$shots_t_sq <- (final_df$shots_t)^2
+
+```
+
+Now that we have an idea about our variable distributions, it is also important to identify the patterns of association between the dependent variable (tgs) and the causal variable (rain) as well as the other conditioning variables. To do this, the method used was a non-parametric lowess curve, which would aid in identifying how the variables are associated with the dependent variable and in what functional form they need to be included in the regressions. 
+The lowess curve for rain vs total goals scored (Appendix : Fig 3a) shows that on average, there is barely any change in the number of goals scored on days where there is rain, as opposed to when it is not raining. We can, however, observe that the maximum number of goals scored is 6 on days when it does not rain, whereas on days where there was rain, the maximum number of goals was 8.The nature of data in this case, limits the analysis that can be done. For instance, we could have used precipitation amounts in absolute terms rather than converting it to a binary variable indicating whether it rained or not.However, since precipitation had a very skewed distribution to the right, with a lot of zero values as well, we could not use log-transformations and hence converted the variable to binary.
+Similarly, based on the pattern of association displayed by the lowess curve for yellow cards (Appendix: Fig 3a), we can observe a change in convexity at two points, hence for our regressions, we will model yellow cards as a linear spline, with knots at 4 and 6 cards per match. In the same manner, based on the patterns of associations exhibited, we will include total shots in a linear manner whereas shots on target will be modelled as a linear spline with a knot at 17 shots on target in a match (please refer to Appendix: Fig 3b). 
+
+## Comparing Explanatory Variables
+
+```{r, include=FALSE}
+###################################################################################################################
+## Examining the correlation coefficients between the causal variable and the conditioning variables
+
+# Subsetting the data for the correlations
+
+cor_data <- (final_df[,c(11,4:8)])
+
+# Creating a correlation matrix
+
+res <- cor(cor_data)
+
+# Displaying the matrix with 2 decimal places
+
+round(res, 2)
+
+# Independent variable regressions
+
+model1 <- lm(rain ~ cnr + yc + rc + shots + shots_t , data = final_df)
+model2 <- lm(cnr ~ rain + yc + rc + shots + shots_t , data = final_df)
+model3 <- lm(yc ~ rain + cnr +rc +shots + shots_t, data = final_df)
+model4 <- lm(rc ~ rain + cnr + yc + shots + shots_t, data = final_df)
+model5 <- lm(shots ~ rain + cnr + yc + rc + shots_t, data = final_df)
+model6 <- lm(shots_t ~ rain + cnr + yc + rc + shots, data = final_df)
+
+#vif(model1)
+#vif(model2)
+#vif(model3)
+#vif(model4)
+#vif(model5)
+#vif(model6)
+
+```
+
+
+Before we move towards modelling our regressions, it is important to analyze how our independent variables (causal variable as well as the conditioning variables) are correlated with each other. This is basically to check for issues pertaining to multicollinearity. To combat this issue, I constructed a correlation matrix (Appendix: Fig 4) between all of the independent variables.The causal variable had very low correlation with all other independent variables. Two independent variables, shots and shots on target, however, had a somewhat high positive correlation. While at an overall level, no two variables are too strongly correlated, I will still perform some additional tests to make sure that we can eliminate the effect of multicollinearity. This is because it is possible for example, that three variables together could explain a high percentage of the variation in a fourth variable. For this, I constructed multiple linear regression models, where each independent variable was regressed on all other independent variables and the respective variance inflation factor of each variable was calculated. All VIF values were below 2, indicating no concern regarding multicollinearity.
+
+
+## Model Choice
+
+```{r, include=FALSE}
+#################################################################################################################################  
+
+## Regressions
+
+# 5 models for robustness checks
+
+reg1 <- feols( tgc ~ rain + cnr + yc + rc + shots + shots_t , data = final_df, vcov = 'hetero')
+
+reg2 <- feols( tgc ~ rain + cnr + yc + rc  + shots_t  , data = final_df , vcov = 'hetero' )
+
+reg3 <- feols( tgc ~ rain + cnr + lspline(yc,c(4,6)) + rc + shots + lspline(shots_t,17), 
+               data = final_df , vcov = 'hetero' )
+
+reg4 <- feols( tgc ~ rain + cnr + lspline(yc,c(4,6)) + rc  + lspline(shots_t,17),
+               data = final_df , vcov = 'hetero' )
+
+reg5 <- feols( tgc ~ rain + cnr + lspline(yc,c(4,6)) + rc + shots + shots_t_sq,
+               data = final_df , vcov = 'hetero' )
+
+```
+
+
+The most appropriate model for this particular analysis has been shown below:
+
+$tgc$ = $\beta_{0}$ + $\beta_{1}$ $\times$ $rain_{bin}$ + $\beta_{2}$ $\times$ $cnr$ + $\beta_{3}$ $\times$ $yc_{(yc<4)}$ + $\beta_{4}$ $\times$ $yc_{(4 >= yc < 6)}$ + $\beta_{5}$ $\times$ $yc_{(yc >= 8)}$ + $\beta_{6}$ $\times$ $rc_{(bin)}$ + $\beta_{7}$ $\times$ $shots$ + $\beta_{8}$ $\times$ $shots.t_{shots.t < 17}$ + $\beta_{9}$ 
+$\times$ $shots.t_{shots.t >=18}$
+
+
+The main interpretation for this regression will be regarding the causal variable. Based on the regression output, conditioning the corners, yellow cards, red cards and shots on target in a match, when it rains, the number of goals increases by 0.24 units. In other words, on average, we could expect an additional goal in a match when it rains on roughly 24% of the occasions. 
+As far as the other variables are concerned, we can see that conditioned on the other independent variables in the regression, each additional corner reduces the number of goals by 0.07 units. In more meaningful terms, this would mean that on average, if a game has total 14 corners, that will lead to an additional goal scored. Similarly we can see that when the number of yellow cards in a game is less than 4 or more than 6, each additional yellow card is negatively associated with the number of goals scored in a match. This relationship is more negative for the cases where there are greater than 6 yellow cards. This makes sense because generally in games with intense competition and fewer goals, there is greater frustration amongst the players and as a result more yellow cards are issued to them. Similarly, for the shots_t variable, the coefficient indicates that conditioning upon all independent variables in the regression, when there are less than 17 shots on target, each additional shot on target would lead to a 0.27 units increase in the number of goals scored. A more meaningful interpretation would be that within this category, for every four shots on target roughly, the number of goals is higher by 1 (important to remember that we will condition on all other independent variables). In a similar fashion, the other variables can also be interpreted. Based on the MLR model, we can see that the number of corners in a match, the number of yellow cards in a match (when between 4 and 6), and the number of shots on target in a match (when less than 17), are statistically signficant in terms of their 'effect' on the total number of goals in a match.
+
+what is b0?
+
+
+$$H_0:=\beta_1 = 0$$
+$$H_A:=\beta_1 \neq 0$$ 
+
+
+Based on the regression output for reg4, we can see that the t-value for the beta coefficient is 1.57, and hence we can say that at a level of significance equal to 0.05, we fail to establish that the coefficient on rain is statistically different from zero as the t value lies within the t-critical values of -2 and 2 (for a 95% confidence interval). When we condition on so many of the variables which are likely to impact the number of goals scored in a match, we get closer to a causal interpretation (this is still not cetris paribus). What we can conclude however is that when conditioned on all other independent variables in the regression, the confidence interval for rain does not include zero, so we can say that rain and the number of goals scored in a match are still positively associated.
+
+
+## Robustness checks and external validity 
+
+
+A total of five models were constructed and tested for this analysis in order to have robust results. Firstly, a regression was run where all variables were included linearly. This was because for all variables the pattern of association with the dependent variable was somewhat linear. In this case the R-squared value was 0.26. In the next regression, column(2), the variable shots was dropped and the same regression otherwise was run. This was done to analyze the impact of any existing multicollinearity. In this case, there was a neglible change in R-squared or the adjusted R-squared. For the third and fourth regressions, the same models were tested as models 1 and 2, but the variable yellow card was included as a linear spline with knots at 4 and 6, whereas shots on target were also modelled as linear splines with a knot at 17. This was done based on the patterns of association observed. We can see that in the case roughly 2 percent greater variation in the dependent variable is explained by these two models. Lastly, due to the pattern of association exhibited between shots on target and the dependent variable, total goals scored per match, an identical regression as regression 4 was run, but shots on target was included as a squared term, rather than as a spline.In this case, the R-squared and the adjusted R-squared were both lower and hence this was not our preferred model choice.
+
+It is important to gauge whether the general pattern that is represented by our data, would hold true for the general pattern in the situation that we truly care about, which is that at a more global scale, if rainfall affects the number of goals in a game.Therefore,in regards to external validity of our results, we can examine it based on three criterion. Firstly, for this particular modelling, where rain is included as a binary variable, we expect results to be stable in time. Rain patterns in the UK are fairly similar each year. Even days, we very extreme rainfall, the number of goals in that match were not exceptionally high, so our conclusions are not susceptible to extreme values. It must be noted however that only a handful of these extreme values took place so we cannot be certain that this will be the case. Nonetheless, we can expect stability in time. We can also expect stability in subgroups. For instance, if we run the same models on a women's football league, we would expect similar results because there is no particular impact that rainfall would have on a woman's performance on a rainy day as opposed to a man's. It would be interesting though, to compare leagues with higher percentage of older players, like MLS league and the Indian and Chinese football leagues which focus on recruiting football legends to promote their leagues. We could speculate that older players might be prone to more errors on a rainy day and that would lead to more goals. Finally, to gauge whether the results would be stable in space is a tougher task. However, we may exhibit a different pattern in lets say the German league or the French league where even though there may be fewer rainy days, but with greater amounts of rainfall which would lead to perhaps different results. Therefore, the external validity for our results in terms of space, would likely be low.
+
+## Causal Interpretation
+
+As mentioned above, by conditioning on as many variables which affect our dependent variables as possible, the aim was to bring our analysis close to a causal one. While there was an initial expectation that rain would cause an increase in the number of goals in the game, based on the results, we can conclude that this is not the case. While the two variables may have a positive correlation, we have failed to identify a somewhat causal relationship between the two variables. However, we can see that through our robustness checking and including the correct functional forms in the regression, the coefficient on the causal variable increases from 0.1934 to 0.2376(in case of the chosen model). It is possible that if we are able to add more conditioning variables, we may be able to establish a somewhat causal link between rain and the total number of goals in a match.
+
+## Conclusion
+
+Due to the nature of research question, there is no policy recommendation per se. However, some key findings have been gathered from this exercise. There are some concerns over the data quality as there can be discrepancies between the weather station and the stadium. Also, the data gives the total rainfall expected for the day and not the rainfall experienced during matchtime. Therefore, there is a measurement error associated with our causal variable. It is possible that when exactly measured for the location as well as the time, we may observe a stronger association between rainfall and the number of goals scored in a game. By overcoming the measurement error, we can also move closer towards discussing causality between the two variables.
+
+\newpage
+
+## Appendix
+*Fig 1: Data Summary Table*
+```{r, echo=FALSE}
+
+# Running the data summary
+datasummary(tgc + rain  + cnr + yc + rc + shots + shots_t  ~ Min + Max + P25 + Median + P75 + Mean + SD + P95 + N, data = final_df ) %>% 
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+\newpage
+
+*Fig 2: Variable Distributions*
+
+```{r, echo=FALSE, fig.width=6, fig.height = 8, fig.align="center"}
+grid.arrange(h1, h2, h3, h4, h5, h6, h7, ncol = 2)
+```
+
+\newpage
+
+*Fig 3a: Patterns of association*
+
+```{r, echo=FALSE, fig.width=6, fig.height = 8, fig.align="center"}
+grid.arrange(a1,a2,a3, ncol = 1)
+```
+
+\newpage
+
+*Fig 3b: Patterns of association*
+
+```{r, echo=FALSE, fig.width=6, fig.height = 8, fig.align="center"}
+grid.arrange(a4,a5, ncol = 1)
+```
+
+
+\newpage
+
+*Fig 4: Correlation Matrix*
+```{r, echo=FALSE, fig.width=6, fig.height = 8, fig.align="center"}
+# Visualizing the correlation
+
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+\newpage
+
+*Fig 5: Comparing Regression Outputs*
+
+```{r, echo=FALSE}
+
+# Displaying all regressions for comparison
+
+kable(etable(reg1, reg2,reg3, reg4, reg5)) %>% 
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+
+```
+
+\newpage
+
+*Fig 6: Summary Output for chosen model*
+
+```{r, echo=FALSE}
+
+# Inference Testing for chosen model
+
+summary(reg4)
+```
