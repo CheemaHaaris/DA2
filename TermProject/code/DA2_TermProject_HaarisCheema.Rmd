@@ -4,6 +4,8 @@ subtitle: "Analyzing the relationship between rainfall and the number of goals s
 author: "Haaris Afzal Cheema"
 date: "12/22/2021"
 output: pdf_document
+html_notebook: default
+urlcolor: blue
 ---
 
 ```{r setup, include=FALSE}
@@ -31,7 +33,7 @@ rm(list= ls())
 This analysis will explore the relationship between rainfall and the number of goals scored in a football match. The analysis will be restricted to the English Premier League for the season 2018-2019. 
 In England, rainfall is often observed during football matches. Due to this, playing conditions tend to get more difficult as the ball tends to skid more and it is expected that players, especially goalkeepers, will be prone to making more errors, leading to a greater number of goals in the match. Therefore, the primary purpose of this analysis will be to investigate whether a relationship exists between rainfall and the number of goals scored in a match.
 
-## Data Collection  # mention general pattern or pop in external validity part
+## Data Collection
 
 ```{r, echo=FALSE}
 
@@ -159,7 +161,7 @@ final_df$rain <- ifelse(final_df$precip > 0 , 1,0)
 ```
 
 
-Data was collected from three different sources for this analysis. Firstly, the data on the premier league (football) was obtained from https://footystats.org/england/premier-league in a csv format. Next, data was collected manually to identify the city for each team (20 obs, 2 variables) and this was joined with the football data. Finally, weather data was collected from https://visualcrossing.com using their query builder, for each of the city in the UK which was associated with each team. 
+Data was collected from three different sources for this analysis. Firstly, the data on the premier league (football) was obtained from [here](https://footystats.org/england/premier-league) in a csv format. Next, data was collected manually to identify the city for each team (20 obs, 2 variables) and this was joined with the football data. Finally, weather data was collected from [here](https://visualcrossing.com) using their query builder, for each of the city in the UK which was associated with each team. 
 
 The cleaned dataset for weather contained 3864 observations for three variables, city, date and and precipitation (in mm). The cleaned data for football contained 380 observations for nine variables, the important ones from which include the total goal count, total corners in the match, number of yellow cards, number of red cards, total shots, and total shots on target. These two datasets were joined using an inner join, and the result was 380 observations.The joined data was checked for missing values, and subsequently, none were found.
 
